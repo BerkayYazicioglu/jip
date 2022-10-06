@@ -56,9 +56,13 @@ res = 50;
 x = linspace(points(1,1), points(2,1), res);
 y = linspace(points(1,2), points(2,2), res);
 
+fig = figure;
+ax = gca;
+view(ax, [0 -1 5]);
+
 for i = 1:res
     F = ground.agents{1}.calculate_forces();
-    ground.plot();
+    ground.plot(fig, gca);
     ground.agents{1}.control([x(i); y(i); 0]);
     pause(0.1);
 end
