@@ -1,69 +1,76 @@
 %% main
 clc;
 clear;
-close;
+%close;
 
 %% initializations
-sample_freq = 10; % Hz
-dt = 1; % s
+use_saved = false; % use saved workspace 
 
-rho_b = 5;  % (m) boundaries
-eta_b = 10; % (m) boundaries
-rho = 2;    % (m) agent field radius
-eta = 10;    % (m) agent eta
+filename = 'ground.mat'; % sim env save file
 
-L = [20 20]; % x y (m) search area limits
-% pos  r1
-pos = [0;  % x (m)
-       0;  % y (m)    
-       0]; % z (m) 
+if use_saved == false
+    create_setup(filename)
+end
+
+load('ground.mat');
+
+%% testing
+% agents
 ids = {'r1'};
+sample_freq = 10; % Hz
+dt = 0.1; % s
+
+% pos  r1
+pos = [8;   % x (m)
+       2;]; % y (m) 
+
 % euler angle   r1 
 orientations = [90; % yaw (degrees)
                 0;  % pitch (degrees)    
                 0]; % roll (degrees) 
 
-% search area boundaries
-bounds = {[ 0    0  ; L(1)  0  ], ... 
-          [L(1)  0  ; L(1) L(2)], ...
-          [L(1) L(2);  0   L(2)], ...
-          [ 0   L(2);  0    0  ]};
-
-%% simulation
-ground = Environment(L, bounds, eta_b, rho_b);
-
-robot1 = Agent(ids{1}, ground.potentials, sample_freq, dt, eta, rho);
-
+robot1 = Agent(ids{1}, sample_freq, dt);
 ground.add_agent(robot1, pos(:,1), orientations(:,1));
 
-%% plotting / testing
+% set goal
+goal = [18;
+        19];   
 
-% add new obstacle in the middle
-points = [9 10; 10 9; 11 10; 10 11];
-interp = 'linear';
-type = 'obstacle';
-eta_o = 10;
-rho_o = 4;
+steps = 100;
 
-ground.add_potential(1, points, interp, eta_o, rho_o, type);
-ground.agents{1}.map.add_potential(1, points, interp, eta_o, rho_o, type);
+ground.agents{1}.set_goal(goal);
 
-% go along the diagonal
-points = [5 0 ; % start
-          15 15];   % end
-res = 50;
+%% plots
 
-x = linspace(points(1,1), points(2,1), res);
-y = linspace(points(1,2), points(2,2), res);
+fig_pot = figure(1);
+ax_pot = axes('Parent', fig_pot);
 
-fig = figure;
-ax = gca;
-view(ax, [0 -1 5]);
+fig_plots = figure(2);
+ax_laser_m = axes('Parent', fig_plots);
+ax_laser_p = axes('Parent', fig_plots);
 
-for i = 1:res
-    F = ground.agents{1}.calculate_forces();
-    ground.plot(fig, gca);
-    ground.agents{1}.control([x(i); y(i); 0]);
-    pause(0.1);
+ax_laser_m = subplot(2, 1, 1, ax_laser_m);
+ax_laser_p = subplot(2, 1, 2, ax_laser_p);
+
+%view(ax_pot, [0 -1 5]);
+view(ax_pot, 2);
+
+pause(2);
+for k = 1:length(ground.agents)
+    for i = 1:steps
+        ground.agents{k}.calculate_forces(ground);
+    
+        ground.plot_laser_measurements(k, fig_plots, ax_laser_m);
+        ground.plot_laser_potentials(k, fig_plots, ax_laser_p);
+        ground.animate(fig_pot, ax_pot);
+    
+        ground.agents{k}.control();
+        pause(0.2);
+    end
+    
+    ground.agents{k}.calculate_forces(ground);
+       
+    ground.plot_laser_measurements(k, fig_plots, ax_laser_m);
+    ground.plot_laser_potentials(k, fig_plots, ax_laser_p);
+    ground.animate(fig_pot, ax_pot);
 end
-
