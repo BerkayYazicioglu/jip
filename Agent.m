@@ -28,16 +28,17 @@ classdef Agent < handle
     end
     %% Constants
     properties(Constant)
-        max_v = 3                  % m/s
+        max_v = 2                  % m/s
+        max_w = 90                 % degrees/s
         comm_range = inf           % m
         neighbor_range = inf       % m
         diameter = 0.25            % m
         laser_pos = [0 0 0];       % body frame, (x y theta)
         laser_angle = [-90 90];    % angle range of the laser beam (degrees)
-        laser_K = 51;              % number of beams on the laser
+        laser_K = 101;              % number of beams on the laser
         laser_range = 5;           % range of the laser beam (m)
-        laser_thresh = 2;          % threshold of calculating force (m)
-        gamma = 2;                 % attractive field gain
+        laser_thresh = 1;          % threshold of calculating force (m)
+        gamma = 1;                 % attractive field gain
         goal_error = 1;            % margin of error for reaching a goal (m)
     end
 
@@ -59,8 +60,9 @@ classdef Agent < handle
         %% Update neighbor positions
         function update_neighbors(obj, agent_list)
             obj.neighbors = {};
-            for agent = agent_list
-                if agent.id ~= obj.id
+            for i = 1:length(agent_list)
+                agent = agent_list{i};
+                if strcmp(agent.id, obj.id) == false
                     if sum((agent.pos - obj.pos).^2)^0.5 <= obj.neighbor_range
                         obj.neighbors{end+1} = agent;
                     end
@@ -76,13 +78,17 @@ classdef Agent < handle
             
             if e > obj.goal_error
                 % assume instant heading change
-                obj.orientation(1) = wrapTo180(obj.orientation(1) + obj.angle_net);
+                correction = obj.angle_net;
+%                 if abs(correction) >= obj.max_w * obj.dt
+%                     correction = sign(correction) * obj.max_w * obj.dt;
+%                 end
+                obj.orientation(1) = wrapTo180(obj.orientation(1) + correction);
                 vec = [d * cosd(obj.orientation(1));
                        d * sind(obj.orientation(1))];
     
                 obj.pos = obj.pos + vec;
             end
-            
+
             obj.t = obj.t + obj.dt;
         end
         
@@ -107,10 +113,12 @@ classdef Agent < handle
                 npos = obj.neighbors{n}.pos;
                 width = obj.neighbors{n}.diameter;
                 lines = [lines; 
-                         npos(1)-width npos(2) npos(1) npos(2)-width;
-                         npos(1) npos(2)-width npos(1)+width npos(2);
-                         npos(1)+width npos(2) npos(1) npos(2)+width;
-                         npos(1) npos(2)+width npos(1)-width npos(2)];
+                         npos(1)-width npos(2);
+                         npos(1) npos(2)-width;
+                         npos(1)+width npos(2);
+                         npos(1) npos(2)+width;
+                         npos(1)-width npos(2);
+                         NaN NaN];
             end
             % measure distances
             obj.laser_beam.measure(lines, [obj.pos; obj.orientation(1)]);

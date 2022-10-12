@@ -16,61 +16,59 @@ load('ground.mat');
 
 %% testing
 % agents
+robots = {};
+
 ids = {'r1'};
+
 sample_freq = 10; % Hz
 dt = 0.1; % s
-
-% pos  r1
-pos = [8;   % x (m)
-       2;]; % y (m) 
-
-% euler angle   r1 
-orientations = [90; % yaw (degrees)
-                0;  % pitch (degrees)    
-                0]; % roll (degrees) 
-
-robot1 = Agent(ids{1}, sample_freq, dt);
-ground.add_agent(robot1, pos(:,1), orientations(:,1));
-
-% set goal
-goal = [18;
-        19];   
-
 steps = 100;
 
-ground.agents{1}.set_goal(goal);
+% pos   x  y
+pos = [10  1 ;  
+       2  10 ]; 
+
+% goal  x   y
+goal = [10 19;
+        19 10];   
+
+% euler angle   yaw  pitch roll
+orientations = [90    0     0; 
+                0     0     0]; 
+
+for i = 1:length(ids)
+    robots{i} = Agent(ids{i}, sample_freq, dt);
+    ground.add_agent(robots{i}, pos(i, :)', orientations(i, :)');
+    ground.agents{i}.set_goal(goal(i, :)');
+end
 
 %% plots
 
-fig_pot = figure(1);
-ax_pot = axes('Parent', fig_pot);
+fig = figure(1);
+ax = {};
+for i = 1:3
+    ax{i} = axes('Parent', fig);
+end
+ax{1} = subplot(2, 2, [1 3], ax{1});
+ax{2} = subplot(2, 2, 2, ax{2});
+ax{3} = subplot(2, 2, 4, ax{3});
 
-fig_plots = figure(2);
-ax_laser_m = axes('Parent', fig_plots);
-ax_laser_p = axes('Parent', fig_plots);
+view(ax{1}, [0 -1 5]);
+%view(ax{1}, 2);
+pause(10);
 
-ax_laser_m = subplot(2, 1, 1, ax_laser_m);
-ax_laser_p = subplot(2, 1, 2, ax_laser_p);
-
-%view(ax_pot, [0 -1 5]);
-view(ax_pot, 2);
-
-pause(2);
-for k = 1:length(ground.agents)
-    for i = 1:steps
+for i = 1:steps+1
+    for k = 1:length(ground.agents)
+        ground.agents{k}.update_neighbors(ground.agents);
         ground.agents{k}.calculate_forces(ground);
-    
-        ground.plot_laser_measurements(k, fig_plots, ax_laser_m);
-        ground.plot_laser_potentials(k, fig_plots, ax_laser_p);
-        ground.animate(fig_pot, ax_pot);
-    
-        ground.agents{k}.control();
-        pause(0.2);
+        
+        ground.animate(fig, ax{1});
+        ground.plot_laser_measurements(1, fig, ax{2});
+        ground.plot_laser_potentials(1, fig, ax{3});
+
+        if i <= steps
+            ground.agents{k}.control();
+        end
+        pause(0.001);
     end
-    
-    ground.agents{k}.calculate_forces(ground);
-       
-    ground.plot_laser_measurements(k, fig_plots, ax_laser_m);
-    ground.plot_laser_potentials(k, fig_plots, ax_laser_p);
-    ground.animate(fig_pot, ax_pot);
 end

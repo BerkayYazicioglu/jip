@@ -110,10 +110,11 @@ classdef Environment < handle
 
             % plot potential field
             surf(ax, obj.X, obj.Y, V_0 - max(V_0, [], 'all'), ...
-                'FaceAlpha', 0.6, 'EdgeColor', 'none'); 
+                'FaceAlpha', 0.4, 'EdgeColor', 'none'); 
             hold(ax, 'off');
             xlim(ax, [0 obj.L(1)]);
             ylim(ax, [0 obj.L(2)]);
+            title(ax, 'Simulation of the field');
         end
 
         %% Plot agent laser readings
@@ -125,6 +126,9 @@ classdef Environment < handle
                 'filled', 'Marker', '.', 'Color', 'k', 'LineWidth', 2);
             yline(ax, agent.laser_thresh);
             ylim(ax, [0 agent.laser_range]);
+            title(ax, sprintf('Agent %s laser beam measurements', agent.id));
+            xlabel(ax, 'Angles (degrees)');
+            ylabel(ax, 'Distances (m)');
             axis(ax, 'tight');
         end
 
@@ -139,9 +143,10 @@ classdef Environment < handle
             plot(ax, angles, agent.f_rep, 'Color', 'r'); hold(ax, 'on');
             plot(ax, angles, agent.f_total, 'Color', 'k'); hold(ax, 'on');
             xline(ax, angles(idx)); 
-            hold(ax, 'off'); 
-            grid(ax, 'on');
-            axis(ax, 'tight');
+            title(ax, sprintf('Agent %s potential fields', agent.id));
+            xlabel(ax, 'Angles (degrees)');
+            ylabel(ax, 'Likelihood estimation');
+            hold(ax, 'off'); grid(ax, 'on'); axis(ax, 'tight');
         end
     end
 end
