@@ -6,11 +6,11 @@ classdef Laser < handle
         theta_laser   % laser beam
         K             % number of beams
         max_range     % max range (m)
-        std_local     % std of local measurement noise (m)
-        max_noise     % probability of maximum noise
-        short_noise   % probability of short noise
+        std_local = 0.01  % std of local measurement noise (m)
+        max_noise = 0.1   % probability of maximum noise
+        short_noise = 0.1 % probability of short noise
         placement     % placement of the sensor on agent's fixed frame (x, y, theta)
-        noise = false % bool for adding noise
+        noise = false  % bool for adding noise
         measurements  % taken measurements
     end
     methods
@@ -79,7 +79,7 @@ classdef Laser < handle
             if(obj.noise)
                 % local gaussian measurement noise 
                 ind = s~= obj.max_range;
-                s(ind) = s(ind) + std_local_noise*randn(size(s(ind)));
+                s(ind) = s(ind) + obj.std_local*randn(size(s(ind)));
                 for k=1:obj.K
                     % short readings
                     if(rand() < obj.short_noise)

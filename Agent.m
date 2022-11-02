@@ -12,7 +12,7 @@ classdef Agent < handle
         w            % angular velocity
         pos          % position [x; y]
         goal         % (x; y) 
-        orientation  % attitude (euler angles?)
+        heading      % attitude 
         neighbors    % neighboring agents
 
         sample_freq  % sensor sampling Hz
@@ -25,27 +25,37 @@ classdef Agent < handle
         angle_net    % angle correction calculated from the net virtual forces 
 
         laser_beam   % 2d laser beam sensor 
+        map          % 2d occupancy map 
+        heatmap      % 2d exploration heatmap
+        
+        f            % BSO frontiers
     end
     %% Constants
     properties(Constant)
         max_v = 2                  % m/s
         max_w = 90                 % degrees/s
+        
         comm_range = inf           % m
         neighbor_range = inf       % m
+        
         diameter = 0.25            % m
+        
         laser_pos = [0 0 0];       % body frame, (x y theta)
         laser_angle = [-90 90];    % angle range of the laser beam (degrees)
-        laser_K = 101;              % number of beams on the laser
+        laser_K = 101;             % number of beams on the laser
         laser_range = 5;           % range of the laser beam (m)
-        laser_thresh = 1;          % threshold of calculating force (m)
+        laser_thresh = 2;          % threshold of calculating force (m)
+        
         gamma = 1;                 % attractive field gain
         goal_error = 1;            % margin of error for reaching a goal (m)
+        
+        fov = 4;                   % occupancy grid field of vision
     end
 
     %% Methods
     methods
         %% Constructor
-        function obj = Agent(id, sample_freq, dt)
+        function obj = Agent(id, grid_dims, sample_freq, dt)
             obj.id = id;
             obj.sample_freq = sample_freq;
             obj.dt = dt;
@@ -55,8 +65,10 @@ classdef Agent < handle
             obj.neighbors = {};
             obj.laser_beam = Laser(obj.laser_pos, obj.laser_angle, ...
                                    obj.laser_K, obj.laser_range);
+            obj.map = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
+            obj.heatmap = obj.map.occupancyMatrix() * 0 + 1;
         end
-
+        
         %% Update neighbor positions
         function update_neighbors(obj, agent_list)
             obj.neighbors = {};
@@ -65,6 +77,7 @@ classdef Agent < handle
                 if strcmp(agent.id, obj.id) == false
                     if sum((agent.pos - obj.pos).^2)^0.5 <= obj.neighbor_range
                         obj.neighbors{end+1} = agent;
+                        syncWith(obj.map, agent.map);
                     end
                 end
             end
@@ -82,9 +95,9 @@ classdef Agent < handle
 %                 if abs(correction) >= obj.max_w * obj.dt
 %                     correction = sign(correction) * obj.max_w * obj.dt;
 %                 end
-                obj.orientation(1) = wrapTo180(obj.orientation(1) + correction);
-                vec = [d * cosd(obj.orientation(1));
-                       d * sind(obj.orientation(1))];
+                obj.heading = wrapTo180(obj.heading + correction);
+                vec = [d * cosd(obj.heading);
+                       d * sind(obj.heading)];
     
                 obj.pos = obj.pos + vec;
             end
@@ -93,13 +106,21 @@ classdef Agent < handle
         end
         
         %% Set goal
-        function set_goal(obj, goal_pos)
-            obj.goal = goal_pos(:);
+        % BSO algorithm 
+        function set_goal(obj)
+            % detect the frontiers
+            explored = obj.map.occupancyMatrix() ~= obj.map.DefaultValue;
+            frontiers = bwboundaries(explored, 8, 'holes');
+            for k = 1:length(frontiers)
+                frontiers{k}(:, 1) = obj.map.GridSize(2) - frontiers{k}(:, 1);
+                frontiers{k} = frontiers{k} ./ obj.fov;
+            end
+            
+            obj.f = frontiers;
         end
-
+        
         %% Calculate forces acting on the robot
         % using obstacle-dependent gaussian potential fields
-        % maybe add virtual fields later for decision making??
 
         function calculate_forces(obj, env)
             theta = wrapTo180(obj.laser_beam.theta_laser(:).' + ...
@@ -121,7 +142,7 @@ classdef Agent < handle
                          NaN NaN];
             end
             % measure distances
-            obj.laser_beam.measure(lines, [obj.pos; obj.orientation(1)]);
+            obj.laser_beam.measure(lines, [obj.pos; obj.heading]);         
 
             % find measurements below threshold
             d = obj.laser_beam.measurements(:).';
@@ -151,8 +172,8 @@ classdef Agent < handle
             end
 
             % convert goal from global to local frame
-            R = [cosd(-obj.orientation(1)) -sind(-obj.orientation(1)); 
-                 sind(-obj.orientation(1)) cosd(-obj.orientation(1))];
+            R = [cosd(-obj.heading) -sind(-obj.heading); 
+                 sind(-obj.heading) cosd(-obj.heading)];
             v_goal = R*(obj.goal - obj.pos);
             theta_goal = atan2d(v_goal(2), v_goal(1));
             % attractive forces
@@ -165,5 +186,19 @@ classdef Agent < handle
             [~, idx] = min(obj.f_total);
             obj.angle_net = theta(idx);
         end 
+
+        %% update the grid (rao-blackwell occupancy grid implementation)
+        
+        function calculate_grid(obj)
+            % Sensor measurements and angles.
+            d = obj.laser_beam.measurements(:)';
+            theta = obj.laser_beam.theta_laser(:)';
+                          
+            pose = [obj.pos; deg2rad(obj.heading + obj.laser_beam.placement(3))];
+            angles = deg2rad(theta);
+            scan = lidarScan(d, angles);
+            
+            insertRay(obj.map, pose, scan, obj.laser_range);
+        end
     end
 end
