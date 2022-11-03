@@ -29,6 +29,8 @@ classdef Agent < handle
         heatmap      % 2d exploration heatmap
         
         f            % BSO frontiers
+        clusters     % BSO clusters
+        w_clusters   % BSO cluster weights
     end
     %% Constants
     properties(Constant)
@@ -45,6 +47,8 @@ classdef Agent < handle
         laser_K = 101;             % number of beams on the laser
         laser_range = 5;           % range of the laser beam (m)
         laser_thresh = 2;          % threshold of calculating force (m)
+
+        detect_thresh = 5;         % sherd detection radius (m)
         
         gamma = 1;                 % attractive field gain
         goal_error = 1;            % margin of error for reaching a goal (m)
@@ -63,10 +67,15 @@ classdef Agent < handle
             obj.w = 0;
             obj.v = 0;
             obj.neighbors = {};
+            obj.f = {};
+            obj.clusters = [];
+            obj.w_clusters = [];
+
             obj.laser_beam = Laser(obj.laser_pos, obj.laser_angle, ...
                                    obj.laser_K, obj.laser_range);
             obj.map = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
-            obj.heatmap = obj.map.occupancyMatrix() * 0 + 1;
+
+            obj.heatmap = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
         end
         
         %% Update neighbor positions
@@ -78,6 +87,7 @@ classdef Agent < handle
                     if sum((agent.pos - obj.pos).^2)^0.5 <= obj.neighbor_range
                         obj.neighbors{end+1} = agent;
                         syncWith(obj.map, agent.map);
+                        syncWith(obj.heatmap, agent.heatmap);
                     end
                 end
             end
@@ -107,16 +117,71 @@ classdef Agent < handle
         
         %% Set goal
         % BSO algorithm 
+
         function set_goal(obj)
             % detect the frontiers
-            explored = obj.map.occupancyMatrix() ~= obj.map.DefaultValue;
-            frontiers = bwboundaries(explored, 8, 'holes');
+            explored = checkOccupancy(obj.heatmap) ~= 0;
+            frontiers = bwboundaries(explored, 8, 'noholes');
+            d = [];
             for k = 1:length(frontiers)
                 frontiers{k}(:, 1) = obj.map.GridSize(2) - frontiers{k}(:, 1);
+                frontiers{k} = fliplr(frontiers{k});
                 frontiers{k} = frontiers{k} ./ obj.fov;
+                frontiers{k} = frontiers{k}(all(frontiers{k}, 2),:);
             end
-            
             obj.f = frontiers;
+            frontiers = cell2mat(frontiers); % world coordinates
+
+            N_ = 20;
+            p_branch = 0.5;
+            p_lvr = 0.5;
+
+            % n closest frontiers as the first cluster
+            p = repmat(obj.pos', [size(frontiers, 1) 1]);
+            d2 = sqrt(sum((frontiers - p).^2, 2));
+
+            mask = d2 >= obj.detect_thresh;
+            d2 = d2(mask);
+            frontiers = frontiers(mask, :);
+
+            % TODO - add weights wrt. how far away clusters are from the
+            % detected sherds
+
+            w_frontiers = 1 ./ d2;
+            [w_candidates, idx] = sort(w_frontiers, 'descend');
+
+            candidates = frontiers(idx(1:N_), :);
+            center = candidates(1, :);
+            
+            if obj.id == 'r1'
+                disp(center);
+            end
+            % generate random value to either use own cluster or merge with others
+            obj.goal = center(:);
+%             for r = 1:N_
+%                 if rand <= p_branch
+%                     if rand <= p_lvr
+%                         % cluster center is the new candidate
+%                         new = center;
+%                         i = 1;
+%                     else
+%                         u = rand;
+%                         p_candidates = w_candidates ./ sum(w_candidates);
+%                         i = length(p_candidates);
+%                         for k = 1:length(p_candidates)
+%                             s_p = sum(p_candidates(1:k));
+%                             if s_p >= u
+%                                 i = k;
+%                                 break
+%                             end
+%                         end
+%                         new = candidates(i, :);
+% 
+%                     end
+%                    
+%                     else
+%                 end
+%             end
         end
         
         %% Calculate forces acting on the robot
@@ -199,6 +264,15 @@ classdef Agent < handle
             scan = lidarScan(d, angles);
             
             insertRay(obj.map, pose, scan, obj.laser_range);
+
+            rays = [];
+            for i = 1:length(angles)
+                [ends, mids] = raycast(obj.heatmap, pose, obj.detect_thresh, angles(i));
+                rays = [rays; ends; mids];
+            end
+
+            % TODO if a sherd is found
+            setOccupancy(obj.heatmap, rays, 0, 'grid');
         end
     end
 end

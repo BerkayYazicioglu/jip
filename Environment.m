@@ -56,11 +56,17 @@ classdef Environment < handle
                 ylim(ax, [0 obj.L(2)]);
                 
                 h_animate = {};
+                C = {'k','b','r','g','y',[.5 .6 .7],[.8 .2 .6]};
+
                 for i = 1:length(obj.agents)
                     h_animate{i} = struct();
                     agent = obj.agents{i};
-                    h_animate{i}.pos = plot(ax, agent.pos(1), agent.pos(2), '.r', 'MarkerSize', 50); 
-                    h_animate{i}.goal = plot(ax, agent.goal(1), agent.goal(2), '*r', 'MarkerSize', 8);
+                    h_animate{i}.pos = plot(ax, agent.pos(1), agent.pos(2), ...
+                                            'Color', C{mod(i, length(C)) + 1}, ...
+                                            'Marker', '.', 'MarkerSize', 50); 
+                    h_animate{i}.goal = plot(ax, agent.goal(1), agent.goal(2), ...
+                                            'Color', C{mod(i, length(C)) + 1}, ...
+                                            'Marker', '*', 'MarkerSize', 10);
                     h_animate{i}.laser = patch(ax, 'XData', 0, 'YData', 0, ...
                                                    'EdgeColor', 'green', ...
                                                    'FaceColor', 'green', ...
@@ -146,8 +152,9 @@ classdef Environment < handle
             hold(ax, 'on');
             for k = 1:length(obj.agents{agent_idx}.f)
                boundary = obj.agents{agent_idx}.f{k};
-               plot(ax, boundary(:,2), boundary(:,1), 'r', 'LineWidth', 2);
+               plot(ax, boundary(:, 1), boundary(:, 2), 'r.', 'LineWidth', 2);
             end
+            plot(ax, agent.goal(1), agent.goal(2), 'r*', 'MarkerSize', 10);
             hold(ax, 'off');
         end       
     end
