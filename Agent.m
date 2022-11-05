@@ -31,6 +31,10 @@ classdef Agent < handle
         f            % BSO frontiers
         clusters     % BSO clusters
         w_clusters   % BSO cluster weights
+
+        goal_reached % flag for goal selection
+        comm_cnt = 1
+        pos_log;
     end
     %% Constants
     properties(Constant)
@@ -42,16 +46,16 @@ classdef Agent < handle
         
         diameter = 0.25            % m
         
-        laser_pos = [0 0 0];       % body frame, (x y theta)
+        laser_pos = [0 0 0];       % body frame, (y theta)
         laser_angle = [-90 90];    % angle range of the laser beam (degrees)
         laser_K = 101;             % number of beams on the laser
         laser_range = 5;           % range of the laser beam (m)
         laser_thresh = 2;          % threshold of calculating force (m)
 
-        detect_thresh = 5;         % sherd detection radius (m)
+        detect_range = 5;          % sherd detection radius (m)
         
         gamma = 1;                 % attractive field gain
-        goal_error = 1;            % margin of error for reaching a goal (m)
+        goal_error = 2;            % margin of error for reaching a goal (m)
         
         fov = 4;                   % occupancy grid field of vision
     end
@@ -70,7 +74,7 @@ classdef Agent < handle
             obj.f = {};
             obj.clusters = [];
             obj.w_clusters = [];
-
+            obj.goal_reached = true;
             obj.laser_beam = Laser(obj.laser_pos, obj.laser_angle, ...
                                    obj.laser_K, obj.laser_range);
             obj.map = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
@@ -80,16 +84,23 @@ classdef Agent < handle
         
         %% Update neighbor positions
         function update_neighbors(obj, agent_list)
-            obj.neighbors = {};
-            for i = 1:length(agent_list)
-                agent = agent_list{i};
-                if strcmp(agent.id, obj.id) == false
-                    if sum((agent.pos - obj.pos).^2)^0.5 <= obj.neighbor_range
-                        obj.neighbors{end+1} = agent;
-                        syncWith(obj.map, agent.map);
-                        syncWith(obj.heatmap, agent.heatmap);
+            t_int = floor(1/obj.dt);
+
+            if obj.comm_cnt == t_int
+                obj.neighbors = {};
+                for i = 1:length(agent_list)
+                    agent = agent_list{i};
+                    if strcmp(agent.id, obj.id) == false
+                        if sum((agent.pos - obj.pos).^2)^0.5 <= obj.neighbor_range
+                            obj.neighbors{end+1} = agent;
+                            updateOccupancy(obj.map, agent.map.occupancyMatrix);
+                            updateOccupancy(obj.heatmap, agent.heatmap.occupancyMatrix);
+                        end
                     end
                 end
+                obj.comm_cnt = 1;
+            else
+                obj.comm_cnt = obj.comm_cnt + 1;
             end
         end
         
@@ -110,8 +121,12 @@ classdef Agent < handle
                        d * sind(obj.heading)];
     
                 obj.pos = obj.pos + vec;
+                obj.goal_reached = true;
+            else
+                obj.goal_reached = true;
             end
-
+            
+            obj.pos_log = [obj.pos_log obj.pos];
             obj.t = obj.t + obj.dt;
         end
         
@@ -119,95 +134,158 @@ classdef Agent < handle
         % BSO algorithm 
 
         function set_goal(obj)
+            t_int = floor(1/obj.dt)/2;
+            if obj.comm_cnt < t_int
+                return
+            end
+
             % detect the frontiers
-            explored = checkOccupancy(obj.heatmap) ~= 0;
-            frontiers = bwboundaries(explored, 8, 'noholes');
-            d = [];
+            explored = checkOccupancy(obj.map) ~= -1;
+            [frontiers, ~, ~, ~] = bwboundaries(explored, 4, 'noholes');
+
+            % preprocessing, bunch of edge cases because of bwboundaries
+            % ¯\_(ツ)_/¯
             for k = 1:length(frontiers)
                 frontiers{k}(:, 1) = obj.map.GridSize(2) - frontiers{k}(:, 1);
                 frontiers{k} = fliplr(frontiers{k});
+                frontiers{k} = frontiers{k}(all(frontiers{k}(:, 1)-1, 2),:);
+                frontiers{k} = frontiers{k}(all(frontiers{k}(:, 2), 2),:);
+                frontiers{k} = frontiers{k}(all(frontiers{k}(:, 1) - obj.map.GridSize(1), 2),:);
+                frontiers{k} = frontiers{k}(all(frontiers{k}(:, 2) - obj.map.GridSize(2)+1, 2),:);
                 frontiers{k} = frontiers{k} ./ obj.fov;
-                frontiers{k} = frontiers{k}(all(frontiers{k}, 2),:);
             end
             obj.f = frontiers;
             frontiers = cell2mat(frontiers); % world coordinates
 
-            N_ = 20;
-            p_branch = 0.5;
-            p_lvr = 0.5;
+            if obj.goal_reached == false
+                return
+            end
 
-            % n closest frontiers as the first cluster
+            lambda_ = 1.5; % importance of cost over utility
+            N_ = 25;
+            N_0 = 500;
+
+            % n0 closest frontiers as the first cluster
             p = repmat(obj.pos', [size(frontiers, 1) 1]);
             d2 = sqrt(sum((frontiers - p).^2, 2));
 
-            mask = d2 >= obj.detect_thresh;
+            mask = d2 >= obj.detect_range / 2;
             d2 = d2(mask);
             frontiers = frontiers(mask, :);
-
-            % TODO - add weights wrt. how far away clusters are from the
-            % detected sherds
-
-            w_frontiers = 1 ./ d2;
-            [w_candidates, idx] = sort(w_frontiers, 'descend');
-
-            candidates = frontiers(idx(1:N_), :);
-            center = candidates(1, :);
-            
-            if obj.id == 'r1'
-                disp(center);
+            if N_0 <= length(frontiers)
+                [d2, idx] = sort(d2);
+                frontiers = frontiers(idx, :);
             end
-            % generate random value to either use own cluster or merge with others
+
+            % cost of a frontier is the normalized distance
+            c_frontiers = d2 ./ max(d2);
+
+            % utility of a frontier is num of detected poi + unexplored
+            % cells over a circle around detection radius 
+            u_frontiers = zeros(size(c_frontiers));
+            
+            poi = [];
+            unexplored = [];
+            [sy, sx] = ind2sub(obj.heatmap.GridSize, find(checkOccupancy(obj.heatmap) == 1));
+            [uy, ux] = ind2sub(obj.heatmap.GridSize, find(checkOccupancy(obj.heatmap) == -1));
+            if sx
+                poi = grid2world(obj.heatmap, [sy sx]);
+            end
+            if ux
+                unexplored = grid2world(obj.heatmap, [uy ux]);
+            end
+                
+            % find the utility of a given point (world coordinates)
+            function u = find_utility(p)
+                p = p(:)';
+                num_poi = 0;
+                num_unexplored = 0;
+                if poi
+                    d_poi = sqrt(sum((repmat(p, [size(poi, 1) 1]) - poi).^2, 2));
+                    num_poi = sum(d_poi <= obj.laser_range);
+                end
+                if unexplored
+                    d_unexp = sqrt(sum((repmat(p, [size(unexplored, 1) 1]) - unexplored).^2, 2));
+                    num_unexplored = sum(d_unexp <= obj.detect_range);
+                end
+                u = num_unexplored / (pi * (obj.detect_range * obj.fov)^2) ...
+                  + num_poi / (size(poi, 1) + 0.0001);
+                u = u/2;
+            end
+            
+            % find utilities
+            for k = 1:length(u_frontiers)
+                 u_frontiers(k) = find_utility(frontiers(k,:));
+            end
+
+            w_frontiers = u_frontiers - lambda_ .* c_frontiers; 
+
+            [w_candidates, idx] = sort(w_frontiers, 'descend');
+            
+            if N_ > length(frontiers)
+                N_ = length(frontiers);
+            end
+            candidates = frontiers(idx(1:N_), :);
+            w_candidates = w_candidates(1:N_, :);
+
+            %center = candidates(1, :);
+            %obj.goal = center(:); % greedy algorithm, uncooperative
+            
+            % LVS for stochasticity
+            u = rand;
+            w_candidates = w_candidates(1: ceil(N_/2));
+            norm_w = (w_candidates - min(w_candidates)) ...
+                   / (max(w_candidates) - min(w_candidates));
+            p_candidates = norm_w ./ sum(norm_w);
+            center_idx = N_;
+            sum_p = 0;
+
+            for i = 1:length(w_candidates)
+                sum_p = sum_p + p_candidates(i);
+                if sum_p >= u
+                    center_idx = i;
+                    break
+                end
+            end
+
+            center = candidates(center_idx, :);
             obj.goal = center(:);
-%             for r = 1:N_
-%                 if rand <= p_branch
-%                     if rand <= p_lvr
-%                         % cluster center is the new candidate
-%                         new = center;
-%                         i = 1;
-%                     else
-%                         u = rand;
-%                         p_candidates = w_candidates ./ sum(w_candidates);
-%                         i = length(p_candidates);
-%                         for k = 1:length(p_candidates)
-%                             s_p = sum(p_candidates(1:k));
-%                             if s_p >= u
-%                                 i = k;
-%                                 break
-%                             end
-%                         end
-%                         new = candidates(i, :);
-% 
-%                     end
-%                    
-%                     else
-%                 end
-%             end
+
+            % repulsion between robots
+            neighbor_d = zeros(1, length(obj.neighbors));
+            for i = 1:length(obj.neighbors)
+                neighbor_d(i) = sqrt(sum((obj.neighbors{i}.goal - obj.goal).^2));
+            end
+            collision = find(neighbor_d < obj.laser_range);
+            
+            if collision
+                n_pos = obj.neighbors{collision(1)}.goal';
+                n_d = neighbor_d(collision(1));
+                R = obj.detect_range^2 / (n_d + obj.detect_range);
+                d_n = sqrt(sum((repmat(n_pos, [size(candidates, 1) 1]) - candidates).^2, 2));
+                inR = find(d_n <= R);
+                if inR
+                    d_n = d_n(inR);
+                    candidates = candidates(inR, :);
+                    [~, idx] = max(d_n);
+                    obj.goal = candidates(idx, :)';
+                else
+                    [~, idx] = min(d_n);
+                    obj.goal = candidates(idx, :)';
+                end
+            end
         end
-        
+
+
         %% Calculate forces acting on the robot
         % using obstacle-dependent gaussian potential fields
 
-        function calculate_forces(obj, env)
+        function calculate_forces(obj)
             theta = wrapTo180(obj.laser_beam.theta_laser(:).' + ...
                               obj.laser_beam.placement(3)) ;
             obj.angle_net = 0;
             obj.f_rep = zeros(size(theta));
             obj.f_att = zeros(size(theta));
-
-            lines = env.lines;
-            for n = 1:length(obj.neighbors)
-                npos = obj.neighbors{n}.pos;
-                width = obj.neighbors{n}.diameter;
-                lines = [lines; 
-                         npos(1)-width npos(2);
-                         npos(1) npos(2)-width;
-                         npos(1)+width npos(2);
-                         npos(1) npos(2)+width;
-                         npos(1)-width npos(2);
-                         NaN NaN];
-            end
-            % measure distances
-            obj.laser_beam.measure(lines, [obj.pos; obj.heading]);         
 
             % find measurements below threshold
             d = obj.laser_beam.measurements(:).';
@@ -254,7 +332,7 @@ classdef Agent < handle
 
         %% update the grid (rao-blackwell occupancy grid implementation)
         
-        function calculate_grid(obj)
+        function calculate_grid(obj, env)
             % Sensor measurements and angles.
             d = obj.laser_beam.measurements(:)';
             theta = obj.laser_beam.theta_laser(:)';
@@ -267,12 +345,41 @@ classdef Agent < handle
 
             rays = [];
             for i = 1:length(angles)
-                [ends, mids] = raycast(obj.heatmap, pose, obj.detect_thresh, angles(i));
+                d_i = d(i);
+                if d_i > obj.detect_range
+                    d_i = obj.detect_range;
+                end
+                [ends, mids] = raycast(obj.heatmap, pose, d_i, angles(i));
                 rays = [rays; ends; mids];
             end
 
-            % TODO if a sherd is found
+            % detect poi
+            poi = world2grid(obj.heatmap, env.poi);
+            poi = rays(ismember(rays, poi, 'rows'), :);
+
             setOccupancy(obj.heatmap, rays, 0, 'grid');
+            if poi
+                setOccupancy(obj.heatmap, poi, 1 , 'grid');
+            end
+        end
+
+        %% measure with lidar and calculate grid
+        function measure_and_map(obj, env)
+            lines = env.lines;
+            for n = 1:length(obj.neighbors)
+                npos = obj.neighbors{n}.pos;
+                width = obj.neighbors{n}.diameter;
+                lines = [lines; 
+                         npos(1)-width npos(2);
+                         npos(1) npos(2)-width;
+                         npos(1)+width npos(2);
+                         npos(1) npos(2)+width;
+                         npos(1)-width npos(2);
+                         NaN NaN];
+            end
+            % measure distances
+            obj.laser_beam.measure(lines, [obj.pos; obj.heading]);   
+            obj.calculate_grid(env);
         end
     end
 end

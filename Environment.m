@@ -10,13 +10,13 @@ classdef Environment < handle
         obstacles         % line segments denoting the environment layout
         boundaries        % line segments defining boundaries
         lines             % combined obstacles and boundaries
+        poi               % points of interest locations
     end
     
     %% Methods
     methods
         %% Constructor
-        % eta_a, rho_a -> agent properties
-        function obj = Environment(L, obstacles, boundaries)
+        function obj = Environment(L, obstacles, boundaries, poi)
             obj.obstacles = obstacles;
             obj.boundaries = boundaries;
             lines = [];
@@ -31,11 +31,13 @@ classdef Environment < handle
             obj.agents = {};
             obj.t = 0;
             obj.L = L;         
+            obj.poi = poi;
         end
 
         %% Add agent to the field
         function add_agent(obj, agent, pos, heading)
             agent.pos = pos;
+            agent.goal = pos;
             agent.heading = heading;
             obj.agents{end+1} = agent;
         end
@@ -52,15 +54,22 @@ classdef Environment < handle
                 for i = 1:length(obj.obstacles)
                     patch(ax, obj.obstacles{i}(:,1), obj.obstacles{i}(:,2), 'black'); 
                 end
+                for i = 1:size(obj.poi, 1)
+                    plot(ax, obj.poi(i, 1), obj.poi(i, 2), 'k.', 'MarkerSize', 10);
+                end
+                    
                 xlim(ax, [0 obj.L(1)]);
                 ylim(ax, [0 obj.L(2)]);
                 
                 h_animate = {};
-                C = {'k','b','r','g','y',[.5 .6 .7],[.8 .2 .6]};
+                C = {"#0072BD","#EDB120","#D95319","#7E2F8E","#77AC30", "#4DBEEE"};
 
                 for i = 1:length(obj.agents)
                     h_animate{i} = struct();
                     agent = obj.agents{i};
+                    h_animate{i}.hist = plot(ax, 0, 0, ...
+                                                 'Color', C{mod(i, length(C)) + 1}, ...
+                                                 'LineWidth', 1.5);
                     h_animate{i}.pos = plot(ax, agent.pos(1), agent.pos(2), ...
                                             'Color', C{mod(i, length(C)) + 1}, ...
                                             'Marker', '.', 'MarkerSize', 50); 
@@ -75,10 +84,11 @@ classdef Environment < handle
                 hold(ax, 'off');
             end
             
-            % plot agents and acting forces
+            % plot agents 
             for i = 1:length(obj.agents)
                 % plot agent and its goal
                 agent = obj.agents{i};
+                set(h_animate{i}.hist, 'XData', agent.pos_log(1,:), 'YData', agent.pos_log(2,:));
                 set(h_animate{i}.pos, 'XData', agent.pos(1), 'YData', agent.pos(2));
                 set(h_animate{i}.goal, 'XData', agent.goal(1), 'YData', agent.goal(2));
                 % sensor radius
@@ -154,7 +164,13 @@ classdef Environment < handle
                boundary = obj.agents{agent_idx}.f{k};
                plot(ax, boundary(:, 1), boundary(:, 2), 'r.', 'LineWidth', 2);
             end
-            plot(ax, agent.goal(1), agent.goal(2), 'r*', 'MarkerSize', 10);
+            % plot found poi
+            [p_row, p_col] = ind2sub(agent.heatmap.GridSize, ...
+                                     find(checkOccupancy(agent.heatmap) == 1));
+            if p_row
+                p = grid2world(agent.heatmap, [p_row p_col]);
+                plot(ax, p(:, 1), p(:, 2), 'g.', 'MarkerSize', 10);
+            end
             hold(ax, 'off');
         end       
     end
