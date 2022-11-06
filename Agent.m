@@ -52,12 +52,14 @@ classdef Agent < handle
         laser_range = 5;           % range of the laser beam (m)
         laser_thresh = 2;          % threshold of calculating force (m)
 
-        detect_range = 5;          % sherd detection radius (m)
+        detect_range = 2;          % sherd detection radius (m)
+        repulse_range = 5;         % inter agent repulsion range
         
         gamma = 1;                 % attractive field gain
         goal_error = 2;            % margin of error for reaching a goal (m)
         
         fov = 4;                   % occupancy grid field of vision
+        occ_thresh = 0.65;
     end
 
     %% Methods
@@ -78,6 +80,7 @@ classdef Agent < handle
             obj.laser_beam = Laser(obj.laser_pos, obj.laser_angle, ...
                                    obj.laser_K, obj.laser_range);
             obj.map = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
+            obj.map.OccupiedThreshold = obj.occ_thresh;
 
             obj.heatmap = occupancyMap(grid_dims(1), grid_dims(2), obj.fov);
         end
@@ -134,14 +137,16 @@ classdef Agent < handle
         % BSO algorithm 
 
         function set_goal(obj)
-            t_int = floor(1/obj.dt)/2;
-            if obj.comm_cnt < t_int
-                return
-            end
-
             % detect the frontiers
-            explored = checkOccupancy(obj.map) ~= -1;
-            [frontiers, ~, ~, ~] = bwboundaries(explored, 4, 'noholes');
+            explored = checkOccupancy(obj.map) == 0;
+            
+            tmp_map = obj.map.copy();
+            inflate(tmp_map, obj.fov, 'grid');
+            
+            occupied = find(checkOccupancy(tmp_map) == 1);
+            [ox, oy] = ind2sub(obj.map.GridSize, occupied);
+            occupied = [oy(:)  obj.map.GridSize(2) - ox(:)];
+            [frontiers, ~, ~, ~] = bwboundaries(explored, 4, 'holes');
 
             % preprocessing, bunch of edge cases because of bwboundaries
             % ¯\_(ツ)_/¯
@@ -152,35 +157,33 @@ classdef Agent < handle
                 frontiers{k} = frontiers{k}(all(frontiers{k}(:, 2), 2),:);
                 frontiers{k} = frontiers{k}(all(frontiers{k}(:, 1) - obj.map.GridSize(1), 2),:);
                 frontiers{k} = frontiers{k}(all(frontiers{k}(:, 2) - obj.map.GridSize(2)+1, 2),:);
+                frontiers{k} = setdiff(frontiers{k}, occupied, 'rows');
                 frontiers{k} = frontiers{k} ./ obj.fov;
             end
             obj.f = frontiers;
+            
+            t_int = floor(1/obj.dt)/2;
+            if obj.comm_cnt < t_int
+                return
+            end
+            
             frontiers = cell2mat(frontiers); % world coordinates
 
             if obj.goal_reached == false
                 return
             end
 
-            lambda_ = 1.5; % importance of cost over utility
-            N_ = 25;
-            N_0 = 500;
-
-            % n0 closest frontiers as the first cluster
+            lambda_ = 0.9; % importance of cost over utility
+            N0_ = 750;
+            N_ = 10;
+            
             p = repmat(obj.pos', [size(frontiers, 1) 1]);
             d2 = sqrt(sum((frontiers - p).^2, 2));
-
-            mask = d2 >= obj.detect_range / 2;
-            d2 = d2(mask);
-            frontiers = frontiers(mask, :);
-            if N_0 <= length(frontiers)
-                [d2, idx] = sort(d2);
-                frontiers = frontiers(idx, :);
-            end
-
+            
             % cost of a frontier is the normalized distance
             c_frontiers = d2 ./ max(d2);
 
-            % utility of a frontier is num of detected poi + unexplored
+            % utility of a frontier is num of detected poi around + unexplored
             % cells over a circle around detection radius 
             u_frontiers = zeros(size(c_frontiers));
             
@@ -208,7 +211,7 @@ classdef Agent < handle
                     d_unexp = sqrt(sum((repmat(p, [size(unexplored, 1) 1]) - unexplored).^2, 2));
                     num_unexplored = sum(d_unexp <= obj.detect_range);
                 end
-                u = num_unexplored / (pi * (obj.detect_range * obj.fov)^2) ...
+                u = num_unexplored / size(unexplored, 1) ...
                   + num_poi / (size(poi, 1) + 0.0001);
                 u = u/2;
             end
@@ -227,6 +230,10 @@ classdef Agent < handle
             end
             candidates = frontiers(idx(1:N_), :);
             w_candidates = w_candidates(1:N_, :);
+            
+            if obj.id == 'r3'
+                disp([u_frontiers(idx(1:5))'; lambda_*c_frontiers(idx(1:5))']);
+            end
 
             %center = candidates(1, :);
             %obj.goal = center(:); % greedy algorithm, uncooperative
@@ -256,12 +263,11 @@ classdef Agent < handle
             for i = 1:length(obj.neighbors)
                 neighbor_d(i) = sqrt(sum((obj.neighbors{i}.goal - obj.goal).^2));
             end
-            collision = find(neighbor_d < obj.laser_range);
+            [n_d, idx] = min(neighbor_d);
             
-            if collision
-                n_pos = obj.neighbors{collision(1)}.goal';
-                n_d = neighbor_d(collision(1));
-                R = obj.detect_range^2 / (n_d + obj.detect_range);
+            if idx
+                n_pos = obj.neighbors{idx}.goal';
+                R = obj.repulse_range^2 / (n_d + obj.repulse_range);
                 d_n = sqrt(sum((repmat(n_pos, [size(candidates, 1) 1]) - candidates).^2, 2));
                 inR = find(d_n <= R);
                 if inR
@@ -269,9 +275,9 @@ classdef Agent < handle
                     candidates = candidates(inR, :);
                     [~, idx] = max(d_n);
                     obj.goal = candidates(idx, :)';
-                else
-                    [~, idx] = min(d_n);
-                    obj.goal = candidates(idx, :)';
+%                 else
+%                     [~, idx] = min(d_n);
+%                     obj.goal = candidates(idx, :)';
                 end
             end
         end
@@ -342,7 +348,6 @@ classdef Agent < handle
             scan = lidarScan(d, angles);
             
             insertRay(obj.map, pose, scan, obj.laser_range);
-
             rays = [];
             for i = 1:length(angles)
                 d_i = d(i);

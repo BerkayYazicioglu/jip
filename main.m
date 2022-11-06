@@ -19,7 +19,7 @@ load('ground.mat');
 % agents
 robots = {};
 
-ids = {'r1', 'r2', 'r3', 'r4'};
+ids = {'r1', 'r2', 'r3'};
 
 sample_freq = 10; % Hz
 dt = 0.1; % s
